@@ -1,0 +1,230 @@
+---
+title: "R_microbiome_tut"
+author: "Ninah"
+date: "2026-06-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r installs, eval=FALSE, echo=FALSE}
+#RTools may be necessary for some of the below installs
+
+#Standard installs:
+install.packages(c("tidyverse","vegan","viridis","fBasics","data.table", "cowplot",))
+
+# from github because pairwiseAdonis is not part of CRAN packages
+remotes::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+
+#Bioconductor installs:
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install(c("phyloseq","ALDEx2"))
+
+#devtools installs:
+if (!require("devtools", quietly = TRUE))
+  install.packages("devtools")
+devtools::install_github(c("jbisanz/qiime2R"))
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+## Libraries
+
+```{r eval=FALSE}
+library(tidyverse)
+library(scales)
+library(data.table)
+library(fBasics)
+library(vegan)
+library(qiime2R)
+library(phyloseq)
+library(ALDEx2)
+library(viridis)
+library(cowplot)
+library(pairwiseAdonis)
+library(ggplot2)
+library(ggrepel)
+```
+
+## Importing QIIME2 artifacts into R
+
+```{r eval=FALSE}
+#Import QIIME2 artifacts into R
+#I had imported the features table, phylogeny tree, taxonomy, and metadata from ubuntu
+#into a folder called data on my desktop
+
+# step 1:
+ps <- qza_to_phyloseq(
+  features = "C:/Users/31040462/Desktop/Microbiomes/Data/table.qza",
+  tree = "C:/Users/31040462/Desktop/Microbiomes/Data/rooted-tree.qza",
+  taxonomy = "C:/Users/31040462/Desktop/Microbiomes/Data/taxonomy.qza",
+  metadata = "C:/Users/31040462/Desktop/Microbiomes/Data/sample-metadata.tsv")
+
+# step 2:
+# save object to computer so work is not lost
+saveRDS(ps, "C:/Users/31040462/Desktop/Microbiomes/Data/ps.rds")
+
+# step 3:
+#====next time you open R, skip step 1 and 2 entirely. Just run this:====
+ps <- readRDS("C:/Users/31040462/Desktop/Microbiomes/Data/ps.rds")
+
+# Or use relative path:
+ps <- readRDS("../Data/ps.rds")
+
+
+```
+
+## Alpha diversity
+
+```{r eval=FALSE}
+# ====================================================================================================================
+# Alpha diversity
+# ====================================================================================================================
+#Run the R-equivalent of the core-metrics function, for alpha diversity metrics & export
+#You usually don't have to normalise data before alpha diversity analysis
+#You will see a warning here - please read this if you are interested in why this should not be an issue for QIIME2 data:
+# https://forum.qiime2.org/t/singletons-and-diversity-richness-indices/2971/10
+alpha <- estimate_richness(ps)
+write.csv(alpha, "alpha-diversity-metrics.csv")
+
+#Plot some results 
+
+# 1. Set your global theme preference
+theme_set(theme_bw())
+
+# 2. Build the plot and save it into an object named 'alpha_plot'
+alpha_plot <- plot_richness(ps, x = "body.site", color = "subject", measures = c("Observed", "Shannon")) +
+  labs(x = "Body site", color = "Subject") +
+  scale_color_viridis(option = "D", aesthetics = "color", discrete = TRUE)
+
+# 3. Print the plot to your RStudio screen to see it
+alpha_plot
+
+# 4. Save the plot to your Plots folder (No dev.off() needed because ggsave can save and delete plot from the screen)
+ggsave("../Plots/alpha.p.png", plot = alpha_plot, units = "cm", width = 15, height = 8, dpi = 300)
+
+```
+
+## Beta diversity
+
+```{r eval=FALSE}
+#Remove zeros if needed
+#otu.table <- subset_taxa(ps, rowSums(otu_table(ps)) !=0 )
+
+#Normalise for relative abundance table instead of absolute
+#Instead of setting the function first, you could also just put the function terms directly in the transformSampleCounts(ps, function(x) x/sum(x)) 
+normalizeSample = function(x) { x/sum(x) }
+rel.table = transformSampleCounts(ps, normalizeSample)
+
+#For beta diversity, distance matrices have to be run separately
+#Here we do Bray-Curtis; just for an example, "unifrac" & "wunifrac" will do unweighted and weighted UniFrac
+bray <- distance(rel.table, "bray")  #c("unifrac", "bray")
+
+#Do principal coordinates using cmdscale, where k is the number of PCos to use & add variance & percentvariance
+braypco <- cmdscale(bray, k = 10)
+brayVar <- apply(braypco, 2, var)
+brayPercent <- round(100 * (brayVar/sum(brayVar)))
+
+#Now add the metadata
+require(data.table)
+brayTable <- merge(x = braypco, y = sample_data(rel.table), by = "row.names", all.x = TRUE)
+colnames(brayTable)[colnames(brayTable)=="V1"] <- "PCo1"
+colnames(brayTable)[colnames(brayTable)=="V2"] <- "PCo2"
+colnames(brayTable)[colnames(brayTable)=="Row.names"] <- "name"
+
+#
+centroids <- aggregate(cbind(PCo1,PCo2)~body.site,data=brayTable, mean)
+brayTable <- merge(brayTable,centroids,by="body.site",suffixes=c("",".centroid"))
+
+#Plot - again remove the # to save to png. You can play with the save options as well
+ggplot(brayTable, aes(PCo1, PCo2, color= body.site)) +
+  geom_point(size=3,alpha=0.7) + 
+  xlab(paste0("PCo1: ",brayPercent[1],"% variance")) +
+  ylab(paste0("PCo2: ",brayPercent[2],"% variance")) +
+  scale_color_viridis(option = "D", aesthetics = "color", discrete = TRUE) + 
+  theme_classic() +
+  geom_segment(aes(x=PCo1.centroid, y=PCo2.centroid, xend=PCo1, yend=PCo2, color= body.site, alpha=0.2))+ 
+  geom_label_repel(data = centroids, aes(x=PCo1, y=PCo2, label=body.site), size=4) +
+  theme(axis.title=element_text(size=14,face="bold"), legend.position="right")
+brayTable
+
+ggsave("C:/Users/31040462/Desktop/Microbiomes/Plots/BC.body.site.png", units= "px",dpi = 300)
+
+#Do statistical testing by PERMANOVA of distance matrices to see significant differences
+#Uses adonis2 from the "vegan" package
+#Left side of the formula is a distance matrix, right side is the independent variables
+beta <- adonis2(bray ~ sample_data(rel.table)$body.site)
+write.csv(beta, "bray-curtis-adonis.csv")
+```
+
+## Differential abundance
+
+```{r eval=FALSE}
+#ALDEx2
+
+# set seed to rule out different results from randomness
+set.seed(17)
+
+# Import necessary data; here we use the gut-only level 6 counts table we generated from QIIME2
+# In the counts import, it is important to set the row names from column 1 (these are the features)
+# We also import the metadata to access the groups (named gps) so that we can set the conditions for ALDEx2
+
+# The body-site column data is extracted as a character string for ALDEx2 to use as group conditions for each sample;
+# These metadata must be in the same order as the samples in the counts table!
+genera <- read.csv("level6-counts-gutonly.csv", row.names = 1)
+gps <- read_tsv("sample-metadata-gutonly.txt")
+
+# If there were q2-types as a row in your metadata, use the command below to exclude them gps[-1,]
+#gps <- gps[-1,]
+bodysite <- as.vector(gps$`body-site`)
+subject <- as.vector(gps$subject)
+
+# The aldex command wraps a couple steps into one
+# First Transforms data with clr & generate Monte Carlo samples of the Dirichlet distribution for each sample.
+# Generate effect sizes
+# Runs t-test/Wilxocon for 2 groups
+# For conditions with more than 3 groups, a glm is recommended
+# the value for mc.samples should be increased outside of the tutorial, especially for glm, but here we keep it low for time
+
+aldexobject <- aldex(genera, subject, mc.samples = 1000, denom = "all")
+
+#plots (FDR default cut-off is 0.05,so do not actually have to specify it; significant features plotted in red by default)
+par(mfrow = c(1, 3))
+aldex.plot(
+  aldexobject, 
+  type = "MA", 
+  test = "welch", 
+  xlab = "Log-ratio abundance",
+  ylab = "Difference",
+  cutoff = 0.05
+)
+aldex.plot(
+  aldexobject, 
+  type = "MW", 
+  test = "welch",
+  xlab = "Dispersion",
+  ylab = "Difference",
+  cutoff = 0.05
+)
+aldex.plot(
+  aldexobject, 
+  type = "volcano", 
+  test = "welch",
+  xlab = "Difference",
+  ylab = "-1(log(q))"
+)
+
+aldex.plot
+#Run dev.off to turn off any active devices. use this after finishing a plot
+#This keeps the plot setting from affecting further analyses
+dev.off()
+# end
+```

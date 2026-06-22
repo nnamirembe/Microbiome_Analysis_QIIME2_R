@@ -1,0 +1,264 @@
+---
+title: "QIIME2R"
+author: "Ninah"
+date: "2026-06-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Set-up
+
+It is important that you change your working directory for this Markdown, which can be found in the setup chunk, to the correct location as found on your system, before executing.
+
+## Load libraries
+
+Warning messages and outputs of this chunk are hidden, to view them, remove "message=FALSE" and results='hide' from the chunk set-up.
+
+```{r libraries, message=FALSE, results='hide'}
+library(tidyverse)
+library(vegan)
+library(qiime2R)
+library(phyloseq)
+library(cowplot)
+```
+
+## Import data
+```{r import}
+#Set wd
+setwd("C:/Users/31040462/Desktop/Microbiomes/Data/")
+#Import QIIME2 artifacts into R; these objects need to be in your working directory, or specify their exact location by editing below
+ps <- qza_to_phyloseq("table.qza","rooted-tree.qza","taxonomy.qza","sample-metadata.tsv")
+```
+
+## Alpha diversity testing and plotting
+
+```{r alphadiversity}
+
+#This function for estimate_richness is from the phyloseq package
+#See lesson notes for explanation of the warning that will be produced here
+#It is not recommended to rely on richness-only estimates using data processed in DADA2, but rather those like Shannon/Simpson
+#For the sake of teaching, we'll include richness estimates
+alpha.ps <- estimate_richness(ps) 
+
+#Export the results as a comma separated values file
+write.csv(alpha.ps, "alpha-diversity-metrics.csv") 
+
+#Extract SampleIDs from the rownames of the alpha diversity & metadata
+#Join the alpha diversity & metadata tables
+alpha.ps$SampleID <- row.names(alpha.ps)
+metadata.ps <- sample_data(ps)
+metadata.ps$SampleID <- row.names(metadata.ps)
+alpha.ps <- left_join(alpha.ps, metadata.ps, 
+                   by = "SampleID") %>% dplyr::select(1:12,16)
+
+#These data could be further shaped to plot multiple variables at once, however:
+#The diversity metric often have vastly different scales, so plotting separately and
+#then joining them, might be the better option.
+shannon.plot <- ggplot(alpha.ps, aes(x = subject, y = Shannon , colour = subject)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(shape=16, position=position_jitterdodge()) +
+  facet_wrap(~ body.site, nrow = 1) +
+  theme_classic() +
+  labs(x="Subject", y = "Shannon's H", colour = "Subject") +
+  scale_x_discrete(labels = c("subject-1" = "1", "subject-2" = "2")) +
+  theme(text = element_text(size = 10),
+        axis.text.x.bottom = element_text(),
+        legend.position = "")
+
+
+observed.plot <- ggplot(alpha.ps, aes(x = body.site, y = Observed , colour = subject)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(shape=16, position=position_jitterdodge()) +
+  theme_classic() +
+  labs(x="Body site", y = "Observed features", colour = "Subject") +
+  theme(text = element_text(size = 10),
+        axis.text.x.bottom = element_text(angle = 90,hjust = 1,vjust = 0.5),
+        legend.position = "")
+
+chao.plot <- ggplot(alpha.ps, aes(x = body.site, y = Chao1 , colour = subject)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(shape=16, position=position_jitterdodge()) +
+  theme_classic() +
+  labs(x="Body site", y = "Chao1", colour = "Subject") +
+  theme(text = element_text(size = 10),
+        axis.text.x.bottom = element_text(angle = 90,hjust = 1,vjust = 0.5))
+
+
+#Arrange plots in grid & save into a .png
+#ggsave has other options, explore the package to see what you can do
+#dev.off() is included to close the plotting device after you are done with the plot
+alpha.plots <- cowplot::plot_grid(shannon.plot, observed.plot, chao.plot + theme(legend.position="none"),
+                        labels = c('A', 'B', 'C'),
+                        label_size = 14, ncol = 3, nrow= 1)
+
+legend <- get_legend(chao.plot + theme(legend.box.margin = margin(0, 0, 0, 12)))
+plot_grid(alpha.plots, legend, rel_widths = c(3, .6))
+
+ggsave("C:/Users/31040462/Desktop/Microbiomes/Plots/alpha.plot.png", units = "cm", width = 15, height = 8, dpi = 300)
+dev.off()
+```
+Self-study:
+The plot_richness function from phyloseq can also directly draw plots from the ps data
+```{r plot-richness, eval=FALSE}
+ggsave("C:/Users/31040462/Desktop/Microbiomes/Plots/alpha.scatterplot.png", units = "cm", width = 15, height = 8, dpi = 300)
+theme_set(theme_bw())
+plot_richness(ps, x = "body.site", color = "subject", 
+                            measures = c("Observed", "Shannon")) +
+                            labs(x="Body site", color = "Subject")
+dev.off()
+```
+
+## Alpha diversity statistical testing
+
+```{r alphastats}
+#Do statistical testing for the results
+#Perform the Kruskal-Wallis tests, examples below are for Shannon & Observed features in Body sites
+kw_shan <- kruskal.test(Shannon ~ body.site, data = alpha.ps)
+kw_of <- kruskal.test(Observed ~ body.site, data = alpha.ps)
+
+#Combine and export to csv
+alpha_kw_all <- rbind(kw_shan, kw_of)
+write.csv(alpha_kw_all, "alpha-stats-kw.csv", row.names = FALSE)
+```
+
+Self-study:If the Kruskal-Wallis test is significant where you have >2 groups, perform pairwise comparisons with multiple test correction.
+Tip: try Dunn's test
+```{r alphastats-plotting}
+# make a plot that shows p-values; use kruskal-wallis tests
+# Below is a function that can be adjusted
+
+# First extract p-values
+kw_shan$p.value
+
+# modify argument to accept p-values
+plot_facet_stats <- function(data,metric = NULL,x_var = NULL,
+                       facet_var = NULL,
+                       y_label = NULL,
+                       p_value = NULL,
+                       output_file = NULL,
+                       width = 20,height = 10,
+                       units = "cm",dpi = 300) {
+  if (is.null(y_label)) {
+    y_label <- metric
+  }
+  if (is.null(output_file)) {
+    output_file <- paste0("alpha_", metric, "_by_", x_var, "_facet_", facet_var, ".png")
+  }
+  data <- data %>% mutate(subject_clean = gsub("subject-", "", subject))
+  
+  #Plot
+  p <- ggplot(data, aes(x = .data[[x_var]], y = .data[[metric]], colour = .data[[x_var]])) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(
+      shape = 16,width = 0.15,height = 0,alpha = 0.8) +
+    facet_wrap(as.formula(paste("~", facet_var)), scales = "free_x", nrow = 1) +
+    theme_classic() +
+    labs(x = "Subject",y = y_label,colour = "Subject") +
+    theme(text = element_text(size = 10),
+      axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+      legend.position = "right",
+      strip.text = element_text(face = "bold"))
+  
+ if (!is.null(p_value)) {
+  label <- paste0("Kruskal-Wallis p = ", signif(p_value, 3))
+  
+  p <- p + labs(tag = label) +
+    theme(plot.tag = element_text(size = 9, face = "italic"),
+          plot.tag.position = "topright") 
+}
+  ggsave(filename = output_file,plot = p,
+         width = width,height = height,
+         units = units,dpi = dpi)
+  return(p)
+}
+
+plot_facet_stats(data = alpha.ps,
+          metric = "Shannon",
+          x_var = "subject_clean",
+          facet_var = "body.site",
+          y_label = "Shannon's H",
+          p_value = kw_shan$p.value,
+          output_file = "C:/Users/31040462/Desktop/Microbiomes/Plots/shannon_subject_by_bodysite_stats.png")
+```
+
+
+## Beta diversity distance matrices and PCoA plots
+
+The code chunk below explains how to produce beta-diversity distance (dissimilarity) matrices from a phyloseq object that was imported from QIIME2. First, the data is normalised to relative abundance per sample, whereafter the distance matrix (in this example, Bray-Curtis) and principal components and their percent variances are computed. These PCoA data are then plotted by a variable of interest.
+```{r betadiversity, message=FALSE}
+#Remove zeros if needed -below command will remove rows adding to zero, uncomment if required
+#otu.table <- subset_taxa(ps, rowSums(otu_table(ps)) !=0 )
+
+#Normalise for relative abundance table instead of absolute
+#Instead of setting a function first, you could also just put the function terms directly in the transformSampleCounts(ps, function(x) x/sum(x)) 
+normRelAb = function(x) { x/sum(x) }
+relab.table = transformSampleCounts(ps, normRelAb) #normRelab (normalizing relative abundance), relab.table is the normRelab table
+
+#For beta diversity, distance matrices have to be run separately
+#Here we do Bray-Curtis; just for an example, "unifrac" & "wunifrac" will do unweighted/weighted UniFrac
+#only one metric can be run at a time, so repeat as necessary
+bray <- distance(relab.table, "bray")
+
+#Do principal coordinates using cmdscale, where k is the number of PCos
+# Perform PCoA with k = 10 as a test
+bray.ktest <- cmdscale(bray, eig = TRUE, k = 10)  # k = 10 as a test
+
+# Check eigenvalues (variance explained)
+eigenvalues <- bray.ktest$eig
+variance_explained <- eigenvalues / sum(eigenvalues) * 100  # Convert to percentage
+
+# Print cumulative variance & choose k where the cumulative variance reaches at least ~70-80%
+cumsum(variance_explained)
+
+# In this case, k = 10 is fine continue with braypco to add variance & percentvariance
+# Re-run with new k if required, then add variance & percentvariance
+braypco <- cmdscale(bray, k = 10)
+brayVar <- apply(braypco, 2, var)
+brayPercent <- round(100 * (brayVar/sum(brayVar)))
+
+#Now add the metadata & rename the first 2 vectors as PCo1 & PCo2, as we will plot those
+require(data.table)
+brayTable <- merge(x = braypco, y = sample_data(relab.table), by = "row.names", all.x = TRUE)
+colnames(brayTable)[colnames(brayTable)=="V1"] <- "PCo1"
+colnames(brayTable)[colnames(brayTable)=="V2"] <- "PCo2"
+colnames(brayTable)[colnames(brayTable)=="Row.names"] <- "name"
+
+#Plot Bray-Curtis PCoA, with 95% conf ellipses
+#You can change the plot axis limits, by uncommenting the coord_cartesian line
+#Only do this once you have found the correct limits for your plot and adjust them in the line
+#In this case, a plot that runs from -1 to 1 on both axes sufficiently cover all points & ellipses
+ggplot(brayTable, aes(PCo1, PCo2, color= body.site)) +
+  geom_point(size=3,alpha=0.7) + 
+  xlab(paste0("PCo1: ",brayPercent[1],"% variance")) +
+  ylab(paste0("PCo2: ",brayPercent[2],"% variance")) +
+  labs(color = "Body site") +
+  theme_classic() +
+  theme(axis.title=element_text(size=12,face="bold"), legend.position="right") +
+  geom_hline(yintercept=0, linetype='dotted', col = 'grey') +
+  geom_vline(xintercept=0, linetype='dotted', col = 'grey') +
+  stat_ellipse(aes(group = body.site))
+# + coord_cartesian(xlim = c(-1, 1), ylim = c(-1, 1))
+
+ggsave("C:/Users/31040462/Desktop/Microbiomes/Plots/BC.body.site.png", units= "px",dpi = 300)
+dev.off()
+```
+Self-study: it is possible to do other plotting for groups, based on the centroids of the points. To generate centroids based on body site and add them to your datatable, try below & look up how you can use centroids to draw interesting plots!
+```{r centroids, eval = FALSE}
+centroids <- aggregate(cbind(PCo1,PCo2)~body.site,data=brayTable, mean)
+brayTable <- merge(brayTable,centroids,by="body.site",suffixes=c("",".centroid"))
+```
+
+## Beta diversity statistical testing
+
+```{r betastats}
+#Do statistical testing by PERMANOVA of distance matrices to see significant differences
+#Uses adonis2 from the "vegan" package
+#Left side of the formula is a distance matrix, right side is the independent variables
+bray.adonis <- adonis2(bray ~ sample_data(relab.table)$body.site)
+write.csv(bray.adonis, "bray-curtis-adonis.csv")
+```
+Self-study: should you have >2 groups, and a significant result is achieved, a post-hoc test should be performed to determine which of the groups differ from each other.
+Tip: Try pairwise testing, such as Kruskal-Wallis, with multiple test correction
